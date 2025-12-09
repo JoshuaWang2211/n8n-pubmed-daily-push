@@ -1,0 +1,415 @@
+{
+  "name": "PubMed Daily Push",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const userIds = [\n  $env.LINE_USER_ID_1,\n  $env.LINE_USER_ID_2\n].filter(Boolean);\n\nreturn userIds.map(id => ({\n  json: {\n    to: id,\n    messages: [\n      {\n        type: \"text\",\n        text: $json.output\n      }\n    ]\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        0
+      ],
+      "id": "94317965-5c3f-49fc-bbfe-f336f19cd335",
+      "name": "Compose LINE Message"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ids = $json.esearchresult?.idlist || [];\nif (!ids.length) return;\n\nconst randomId = ids[Math.floor(Math.random() * ids.length)];\n\nreturn {\n  json: {\n    pmid: randomId,\n    query: $json.value,\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "f2a90e07-ecb8-4644-bef0-bf6fdfbffbff",
+      "name": "Pick Random ID"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.1",
+          "mode": "list",
+          "cachedResultName": "gpt-5.1"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        2336,
+        224
+      ],
+      "id": "ed4d5fcc-bfa5-4723-aad1-462c1f2a3a7f",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "6DyF3QV7FnmiP606",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=下面是今天從 PubMed 獲得的新知文章，每個主題各一篇，請將每篇文章編號 (1. 2... etc.)。輸出訊息格式：\n1. 以 \"下面是今天從 PubMed 生物醫學資料庫獲得的新知文章\" 開頭\n2. 附上 \"主題\" (原文)\n3. 附上 \"標題\" (翻成中文)\n4. 彙整摘要\n5. 每篇結尾附上連結，格式為：https://pubmed.ncbi.nlm.nih.gov/[PMID]，請根據摘要中提供的 PMID 自行產出正確網址\n\n{{ $json.topics }}",
+        "options": {
+          "systemMessage": "你是台灣醫學新知推播小助手，回覆要自然、溫暖、口語化，字數精煉、重點明確，對象是台灣一般大眾。所有內容請使用繁體中文，除非有必須以原文才能完善表示的字詞，則例外。勿使用粗體、斜體或 mark down 格式)，只能使用 plaintext"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ],
+      "id": "cbc2f708-b71b-48fc-9336-fd375f424f0f",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={\n  \"to\": \"{{$json.to}}\",\n  \"messages\": {{ JSON.stringify($json.messages) }}\n}",
+        "headerParametersJson": "={\n  \"Authorization\": \"={{$env.LINE_CHANNEL_TOKEN}}\",\n  \"Content-Type\": \"application/json\"\n}"
+      },
+      "id": "f0112304-a501-4cff-aa1c-9e1eadcab84b",
+      "name": "Send LINE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2864,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputItems = $input.all();\nconst allTopics = $items(\"Set Topics\");\n\nconst messages = inputItems.map((item, index) => {\n  const data = item.json.PubmedArticleSet;\n  if (!data?.PubmedArticle?.length) return null;\n\n  const article = data.PubmedArticle[0];\n  const medline = article.MedlineCitation?.[0];\n  const art = medline?.Article?.[0];\n\n  const title = art?.ArticleTitle?.[0] ?? '(No Title)';\n  const absNode = art?.Abstract?.[0]?.AbstractText;\n\n  // 🔍 處理摘要（並強制清除空白）\n  let abstractText = '';\n  if (Array.isArray(absNode)) {\n    abstractText = absNode\n      .map(el => (typeof el === 'string' ? el : el._ ?? ''))\n      .join(' ');\n  } else if (typeof absNode === 'string') {\n    abstractText = absNode;\n  }\n  abstractText = abstractText.trim();\n\n  // ❌ 若無摘要，直接排除\n  if (!abstractText) return null;\n\n  const pmid = medline?.PMID?.[0]?._ ?? '';\n  const topic = allTopics[index]?.json?.topic ?? '(未提供主題)';\n\n  return `主題：${topic}\\n標題：${title}\\n摘要：${abstractText}\\n連結：https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;\n}).filter(el => el);\n\nreturn [{\n  json: {\n    topics: messages.join('\\n\\n'),\n  }\n}];\n"
+      },
+      "id": "011a89b2-850c-402a-a65c-64561b1d49b5",
+      "name": "Parse PubMed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+        "responseFormat": "string",
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "db",
+              "value": "pubmed"
+            },
+            {
+              "name": "id",
+              "value": "={{$json[\"pmid\"]}}"
+            },
+            {
+              "name": "retmode",
+              "value": "xml"
+            },
+            {
+              "name": "email",
+              "value": "={{$env.NCBI_EMAIL}}"
+            },
+            {
+              "name": "api_key",
+              "value": "={{$env.NCBI_API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "6d034018-28d6-40fc-b91b-2ea1c8caeb45",
+      "name": "PubMed Fetch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1568,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "db",
+              "value": "pubmed"
+            },
+            {
+              "name": "term",
+              "value": "={{$json[\"value\"]}}"
+            },
+            {
+              "name": "retmode",
+              "value": "json"
+            },
+            {
+              "name": "retmax",
+              "value": "30"
+            },
+            {
+              "name": "email",
+              "value": "={{$env.NCBI_EMAIL}}"
+            },
+            {
+              "name": "api_key",
+              "value": "={{$env.NCBI_API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "c7059774-8559-4422-9c88-8f7d32c13962",
+      "name": "PubMed Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        896,
+        0
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 12
+            }
+          ]
+        }
+      },
+      "id": "16c4b4d9-f7af-42a8-b177-9059e4f5dc1c",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items\n  .filter(item =>\n    typeof item.json.value === 'string' &&\n    item.json.value.trim() !== ''\n  )\n  .map(item => ({\n    json: {\n      value: item.json.value,\n    }\n  }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "d60630c3-09fc-4412-80ce-b18ed8ff64f5",
+      "name": "Filter Non-empty Search"
+    },
+    {
+      "parameters": {
+        "options": {
+          "explicitArray": true
+        }
+      },
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        1792,
+        0
+      ],
+      "id": "b42e5293-da9b-4a8f-b722-7c73d16c3356",
+      "name": "XML"
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "35b31a0f-4b62-43a6-b061-5df79ce1a84a",
+      "name": "Wait 2 Seconds",
+      "webhookId": "5f699f4f-c810-41bf-928c-26e23273d0d7"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  // 🔍 固定期刊\n  { json: { topic: \"Nature Reviews Drug Discovery\", value: \"Nature Reviews Drug Discovery[Journal]\" } },\n  { json: { topic: \"Science\", value: \"Science[Journal]\" } },\n  { json: { topic: \"The Lancet\", value: \"Lancet[Journal]\" } },\n  { json: { topic: \"Cell\", value: \"Cell[Journal]\" } },\n  \n  // ⚙️ 醫材研發主題（補到總共 10 項）\n  { json: { topic: \"微創手術與機器手臂\", value: \"(\\\"minimally invasive surgery\\\" OR \\\"robotic surgery\\\") AND device\" } },\n  { json: { topic: \"腎臟醫學綜合新知\", value: \"kidney disease OR renal function OR nephrology\" } },\n  { json: { topic: \"植入式裝置與生物相容材料\", value: \"(implantable device OR bioresorbable OR biocompatible material)\" } },\n  { json: { topic: \"影像與手術導引技術\", value: \"(\\\"surgical navigation\\\" OR \\\"augmented reality\\\" OR \\\"3D imaging\\\")\" } },\n  { json: { topic: \"智慧復健與功能重建\", value: \"(\\\"rehabilitation device\\\" OR \\\"exoskeleton\\\" OR \\\"motor recovery\\\")\" } },\n  { json: { topic: \"醫療 AI 應用與倫理挑戰\", value: \"(\\\"AI in medicine\\\" OR \\\"machine learning\\\" OR \\\"medical ethics\\\")\" } },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "65fb0346-fce3-4f5a-a326-4eadc7079783",
+      "name": "Set Topics"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Pick Random ID": {
+      "main": [
+        [
+          {
+            "node": "Wait 2 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Compose LINE Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose LINE Message": {
+      "main": [
+        [
+          {
+            "node": "Send LINE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse PubMed": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PubMed Fetch": {
+      "main": [
+        [
+          {
+            "node": "XML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PubMed Search": {
+      "main": [
+        [
+          {
+            "node": "Pick Random ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Topics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Non-empty Search": {
+      "main": [
+        [
+          {
+            "node": "PubMed Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "XML": {
+      "main": [
+        [
+          {
+            "node": "Parse PubMed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2 Seconds": {
+      "main": [
+        [
+          {
+            "node": "PubMed Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Topics": {
+      "main": [
+        [
+          {
+            "node": "Filter Non-empty Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "9939bf1e-ebe3-4376-ac29-64bcc52daabe",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cc45d7065019d017b360072b2a94d9597e79317286e2cddf53c3a89639a55421"
+  },
+  "id": "iE7Fzn3srNnKVWmv",
+  "tags": [
+    {
+      "updatedAt": "2025-06-14T14:06:49.891Z",
+      "createdAt": "2025-06-14T14:06:49.891Z",
+      "id": "9ODiGkx5t0Et6WGl",
+      "name": "LINE"
+    }
+  ]
+}
